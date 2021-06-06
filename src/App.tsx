@@ -2,7 +2,11 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Switch, Route } from 'react-router-dom';
 import { nanoid } from 'nanoid';
-import { rastrearEncomendas, RastreioEvent } from 'correios-brasil';
+import {
+  rastrearEncomendas,
+  RastreioEvent,
+  RastreioResponse,
+} from 'correios-brasil';
 import Store from 'electron-store';
 
 import Order from './components/Order';
@@ -37,7 +41,61 @@ function parseDate(date: string, hours: string) {
   );
 }
 
+function parseOrder(
+  name: string,
+  code: string,
+  rawOrder: Array<RastreioEvent>
+): Orders {
+  let orderHistories: Array<History> = [];
+  const ordersResponse = [...rawOrder];
+
+  ordersResponse.reverse();
+
+  orderHistories = ordersResponse.map((element) => {
+    if (element.local) {
+      return {
+        date: parseDate(element.data, element.hora),
+        status: element.status,
+        place: element.local === 'País - /' ? 'Exterior' : element.local,
+      };
+    }
+
+    return {
+      date: parseDate(element.data, element.hora),
+      status: element.status,
+      place: element.origem ? element.origem : 'Desconhecido',
+    };
+  });
+
+  let status = 'Em trânsito';
+  if (ordersResponse[0].status === 'Objeto postado') {
+    status = 'Postado';
+  } else if (ordersResponse[0].status === 'Objeto entregue ao destinatário') {
+    status = 'Entregue';
+  } else if (
+    ordersResponse[0].status === 'Objeto saiu para entrega ao destinatário'
+  ) {
+    status = 'Saiu para entrega';
+  }
+
+  return {
+    name,
+    status,
+    code,
+    history: orderHistories,
+    startDate: parseDate(
+      ordersResponse[ordersResponse.length - 1].data,
+      ordersResponse[ordersResponse.length - 1].hora
+    ),
+    origin:
+      ordersResponse[ordersResponse.length - 1].local === 'País - /'
+        ? 'Exterior'
+        : (ordersResponse[ordersResponse.length - 1].local as string),
+  };
+}
+
 const store = new Store();
+let updateInterval;
 
 const Home = () => {
   const [orders, setOrders] = useState<Array<Orders>>([]);
@@ -70,6 +128,34 @@ const Home = () => {
       setOrders(savedOrders);
     }
   }, []);
+
+  useEffect(() => {
+    if (orders.length > 0) {
+      const updatedOrders = [...orders];
+
+      const ordersCode = updatedOrders.map((order) => order.code);
+
+      rastrearEncomendas(ordersCode)
+        .then((response) => {
+          try {
+            for (let i = 0; i < updatedOrders.length; i += 1) {
+              updatedOrders[i] = parseOrder(
+                updatedOrders[i].name,
+                updatedOrders[i].code,
+                response[i]
+              );
+            }
+
+            return setOrders(updatedOrders);
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            return console.log(err);
+          }
+        })
+        // eslint-disable-next-line no-console
+        .catch((err) => console.log(err));
+    }
+  }, [orders]);
 
   return (
     <>
@@ -204,7 +290,7 @@ const Home = () => {
                   .then((response) => {
                     try {
                       let orderHistories: Array<History> = [];
-                      let ordersResponse: Array<RastreioEvent> = [];
+                      let ordersResponse: RastreioResponse = [];
 
                       if (response) {
                         ordersResponse = (response[0] as unknown) as Array<
